@@ -312,7 +312,7 @@ class MPRISRemote(object):
     def playstatus(self):
         status = self.properties.Get(mpris[1], 'PlaybackStatus')
         loopin = self.properties.Get(mpris[1], 'LoopStatus')
-        shuffle = self.player.Shuffle()
+        shuffle = self.properties.Get(mpris[1], 'Shuffle')
         yield ("PlayStatus: status"
              + "LoopStatus: %s\n" % ("enabled" if loopin else "disaled")
              + "Random/Shuffle: %s\n" % ("enabled" if shuffle else "disaled"))
