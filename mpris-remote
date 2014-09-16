@@ -523,15 +523,14 @@ if __name__ == '__main__':
 
     remote = MPRISRemote()
 
-    from getopt import gnu_getopt
+    import getopt
     shortopt = '?hp:'
     longopt  = ['help', 'player=']
 
     try:
-        opts, args = gnu_getopt(sys.argv[1:], shortopt, longopt)
-    except GetoptError:
-        print >>sys.stderr, str(error)
-        print usage
+        opts, args = getopt.gnu_getopt(sys.argv[1:], shortopt, longopt)
+    except getopt.GetoptError as e:
+        print >>sys.stderr, str(e)
         SystemExit(4)
 
     for arg, value in opts:
@@ -576,8 +575,7 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         raise SystemExit(2)
     else:
-        print >>sys.stderr, "Unexpected error:", sys.exc_info()[0]
-        raise SystemExit(3)
+        raise SystemExit(0)
 
 #
 # vim:fenc=utf-8:ft=python:ci:pi:sts=4:sw=4:ts=4:
