@@ -1,17 +1,21 @@
 #!/usr/bin/env python
+#
+# (c) 2008-2011 Nick Welch <nick@incise.org>
+# (c) 2014 tokiclover/-tclover <at-gmail-dot-com>
+#
+# HOMEPAGE: https://github.com/tokiclover/mpris-remote
+# COPYING: NO COPYRIGHT - CC0-1.0 *or* 'public domain', to be more readable,
+# as uplished by Creative Common: http://creativecommons.org/publicdomain/zero/1.0
+#
 
 usage = """
-mpris-remote, written by Nick Welch <nick@incise.org> in 2008-2011.
-Homepage: http://incise.org/mpris-remote.html
-No copyright. This work is dedicated to the public domain.
-For full details, see http://creativecommons.org/publicdomain/zero/1.0/
+USAGE: mpris-remote [options] [command]
 
-USAGE: mpris-remote [command [args to command]]
-
+OPTIONS:
+   -p, --player=name   set the player name to pick up at runtime
+   -?, -h, --help      print this help message and exit
 COMMANDS:
-
-  [no command]         prints a display of current player status, song playing,
-                       etc.
+  [no command]         prints current remote player status, song playing, etc
 
   prev[ious]           go to previous track
   next                 go to next track
@@ -20,72 +24,39 @@ COMMANDS:
   pause                pause playback
   toggle               toggle playback
 
-  trackinfo            print metadata for current track
+  metadata             print metadata for current track
   trackinfo <track#>   print metadata for given track
-  trackinfo '*'        print metadata for all tracks
+  trackinfo ['*']       print metadata for all tracks
 
-  volume               print volume
-  volume <0..100>      set volume
+  volume [<0..100>]    print or set volume
+  loop [true|false]       print or set whether or not player will loop track list
+  shuffle [false|true] print or set random / shuffle mode
 
-  repeat <true|false>  set current track repeat on or off
+  addtrack <uri>       add a track uri (depend on particular support)
+  deltrack <track#>       delete specified track
+  clear                   clear playlist
 
-  loop                 prints whether or not player will loop track list at end
-  loop <true|false>    sets whether or not player will loop track list at end
-
-  random               prints whether or not player will play randomly/shuffle
-  random <true|false>  sets whether or not player will play randomly/shuffle
-
-  addtrack <uri>       add track at specified uri
-                         (valid file types/protocols dependent on player)
-  addtrack <uri> true  add track at specified uri and start playing it now
-                         a uri can also be "-" which will read in filenames
-                         on stdin, one per line.  (this applies to both
-                         variants of addtrack.  the "playnow" variant will
-                         add+play the first track and continue adding the rest.)
-  deltrack <track#>    delete specified track
-  clear                clear playlist
-
-  position             print position within current track
-  seek <time>          seek to position in current track
-                         supported time formats:
-                         hh:mm:ss.ms | mm:ss.ms | ss | ss.ms | .ms
-                         hh:mm:ss    |    hh:mm | x% | x.x[x[x]...]%
-                         all are negatable to compute from end of track,
-                         e.g. -1:00.  the "ss" format can be >60 and the ".ms"
-                         format can be >1000.
-                         <actually all of that is a lie -- right now you can
-                          only pass in an integer as milliseconds>
+  setposition <t> <p>  set position postion of <t> track to <p> position
+  seek <time>           seek to position in current track [hh:][mm:][ss:][.ms]
 
   tracknum             print track number of current track
-  numtracks            print total number of tracks in track list
+  numtracks               print total number of tracks in track list
+  playstatus           print player status, paused, or stopped, etc
 
-  playstatus           print whether the player is playing, paused, or stopped,
-                       and print the random, repeat, and loop settings
+  identity               print identity of player (e.g. name and version)
+  quit                   cause player to exit
 
-  identity             print identity of player (e.g. name and version)
-  quit                 cause player to exit
-
-ENVIRONMENT VARIABLES:
-
-  MPRIS_REMOTE_PLAYER
-    If unset or set to "*", mpris-remote will communicate with the first player
-    it finds registered under "org.mpris.*" through D-BUS.  If you only have one
-    MPRIS-compliant player running, then this will be fine.  If you have more
-    than one running, you will want to set this variable to the name of the
-    player you want to connect to.  For example, if set to foo, it will try to
-    communicate with the player at "org.mpris.foo" and will fail if nothing
-    exists at that name.
-
-NOTES:
-
-  track numbers when used or displayed by commands always begin at zero, but
-  the informational display when mpris-remote is called with no arguments
-  starts them at one.  (track "1/2" being the last track would make no sense.)
+MPRIS_PLAYER:          set remote player by this environment variable
+WARNING:               track numbers begin at 0 while playing start at 1
 """
 
 import os, sys, re, time, urllib2, dbus
 
-org_mpris_re = re.compile('^org\.mpris\.([^.]+)$')
+mpris = ['org.mpris.MediaPlayer2']
+for name in ['Player','Playerlists','TrackList']:
+    mpris.append(mpris[0] + '.' + name)
+mpris.append('/' + re.sub('\.', '/', mpris[0]))
+mpris.append('org.freedesktop.DBus.Properties')
 
 class BadUserInput(Exception):
     pass
@@ -121,9 +92,10 @@ class is_zero_to_100(object):
 class is_track_num(object):
     @staticmethod
     def type_desc(remote):
-        if remote.tracklist_len > 0:
-            return 'an integer within [0..%d] (current playlist size is %d)' % (remote.tracklist_len-1, remote.tracklist_len)
-        elif remote.tracklist_len == 0:
+        if len(remote.tracklist_list) > 0:
+            return 'an integer within [0..%d] (current playlist size is %d)' \
+                % (len(remote.tracklist_list)-1, len(remote.tracklist_list))
+        elif len(remote.tracklist_list) == 0:
             return 'an integer within [0..<tracklist length>], ' \
                         'although the current track list is empty, so ' \
                         'no track number would currently be valid'
@@ -132,9 +104,9 @@ class is_track_num(object):
 
     def __init__(self, remote, arg):
         int(arg)
-        if remote.tracklist_len == -1:
+        if len(remote.tracklist_list) == 0:
             return # not much we can do; just assume it's okay to pass along
-        if not 0 <= int(arg) <= remote.tracklist_len-1:
+        if not 0 <= int(arg) < len(remote.tracklist_list):
             raise ValueError
 
 class is_track_num_or_star(object):
@@ -184,7 +156,8 @@ def explain_argtype(i, typeclass, optional=False):
                 try:
                     typeclass(remote_self, args[i])
                 except:
-                    raise BadUserInput("argument %d to %s must be %s." % (i+1, meth.func_name, typeclass.type_desc(remote_self)))
+                    raise BadUserInput("argument %d to %s must be %s." % \
+                    (i+1, meth.func_name, typeclass.type_desc(remote_self)))
             return meth(remote_self, *args)
         new.func_name = meth.func_name
         return new
@@ -236,36 +209,33 @@ class MPRISRemote(object):
 
     def __init__(self):
         self.bus = dbus.SessionBus()
-        self.players_running = [ name for name in self.bus.list_names() if org_mpris_re.match(name) ]
+        self.players = [ name for name in self.bus.list_names() if re.match(mpris[0] + '\..+$', name) ]
 
-    def find_player(self, requested_player_name):
-        if not self.players_running:
+    def find_player(self, requested):
+        if not self.players:
             raise NoPlayersRunning()
 
-        if requested_player_name == '*':
-            self.player_name = org_mpris_re.match(self.players_running[0]).group(1)
+        if requested == '*':
+            self.name = self.players[0]
         else:
-            if 'org.mpris.%s' % requested_player_name not in self.players_running:
+            self.name = mpris[0] + '.' + requested
+            if self.name not in self.players:
                 raise RequestedPlayerNotRunning()
-            self.player_name = requested_player_name
+            self.name = mpris[0] + '.' + requested
 
-        root_obj      = self.bus.get_object('org.mpris.%s' % self.player_name, '/')
-        player_obj    = self.bus.get_object('org.mpris.%s' % self.player_name, '/Player')
-        tracklist_obj = self.bus.get_object('org.mpris.%s' % self.player_name, '/TrackList')
+        self.obj        = self.bus.get_object(self.name, mpris[4])
+        self.root       = dbus.Interface(self.obj, dbus_interface = mpris[0])
+        self.player     = dbus.Interface(self.obj, dbus_interface = mpris[1])
+        self.tracklist  = dbus.Interface(self.obj, dbus_interface = mpris[3])
+        self.properties = dbus.Interface(self.obj, dbus_interface = mpris[5])
 
-        self.root      = dbus.Interface(root_obj,      dbus_interface='org.freedesktop.MediaPlayer')
-        self.player    = dbus.Interface(player_obj,    dbus_interface='org.freedesktop.MediaPlayer')
-        self.tracklist = dbus.Interface(tracklist_obj, dbus_interface='org.freedesktop.MediaPlayer')
-
-        try:
-            self.tracklist_len = self.tracklist.GetLength()
-        except dbus.exceptions.DBusException:
-            # GetLength() not supported by player (BMPx for example)
-            self.tracklist_len = -1
-
+#        try:
+#            self.tracklist_list = self.properties.Get(self.tracklist, 'Tracks')
+#        except dbus.exceptions.DBusException:
+#            self.tracklist_list = [ ]
 
     def _possible_names(self):
-        return [ name for name in self.bus.list_names() if org_mpris_re.match(name) ]
+        return self.players
 
     # commands
 
@@ -273,7 +243,11 @@ class MPRISRemote(object):
 
     @explain_numargs(0)
     def identity(self):
-        print self.root.Identity()
+        try:
+            player = self.properties.Get(mpris[0], 'Identity')
+        except dbus.exceptions.DBusException:
+            player = self.name.replace(mpris[0] + '.', "")
+        print player
 
     @explain_numargs(0)
     def quit(self):
@@ -283,11 +257,11 @@ class MPRISRemote(object):
 
     @explain_numargs(0)
     def prev(self):
-        self.player.Prev()
+        self.player.Previous()
 
     @explain_numargs(0)
     def previous(self):
-        self.player.Prev()
+        self.player.Previous()
 
     @explain_numargs(0)
     def next(self):
@@ -307,63 +281,59 @@ class MPRISRemote(object):
     
     @explain_numargs(0)
     def toggle(self):
-        status = self.player.GetStatus()
-        # check if the player is playing
-        if status[0] == 1:
-            self.player.Play()
-        else:
-            self.player.Pause()
+        self.player.PlayPause()
+
+    @explain_numargs(0)
+    def metadata(self):
+        meta = self.properties.Get(mpris[1], 'Metadata')
+        yield format_metadata(meta)
 
     @explain_numargs(0, 1)
     @explain_argtype(0, is_zero_to_100, optional=True)
     def volume(self, vol=None):
         if vol is not None:
-            self.player.VolumeSet(int(vol))
+            self.properties.Set(mpris[1], 'Volume', float(vol))
         else:
-            print self.player.VolumeGet()
+            print self.properties.Get(mpris[1], 'Volume')
 
-    @explain_numargs(0)
-    def position(self):
-        print format_time(self.player.PositionGet())
+    @explain_numargs(2)
+    @explain_argtype(is_int, is_int)
+    def setposition(self, track, pos):
+        trackid = '%s/Track/trackid' % self.path
+        print trackid
+        self.player.SetPosition('%s%s' % trackid % int(track), int(pos))
 
     @explain_numargs(1)
     @explain_argtype(0, is_int)
     def seek(self, pos):
-        self.player.PositionSet(int(pos))
-
-    @explain_numargs(1)
-    @explain_argtype(0, is_boolean)
-    def repeat(self, on):
-        if on == 'true':
-            self.player.Repeat(True)
-        elif on == 'false':
-            self.player.Repeat(False)
+        self.player.Seek(int(pos))
 
     @explain_numargs(0)
     def playstatus(self):
-        status = self.player.GetStatus()
-        yield ("playing: %s\n" % playstatus_from_int(status[0])
-             + "random/shuffle: %s\n" % ("true" if status[1] else "false")
-             + "repeat track: %s\n" % ("true" if status[2] else "false")
-             + "repeat list: %s\n" % ("true" if status[3] else "false"))
+        status = self.properties.Get(mpris[1], 'PlaybackStatus')
+        loopin = self.properties.Get(mpris[1], 'LoopStatus')
+        shuffle = self.player.Shuffle()
+        yield ("PlayStatus: status"
+             + "LoopStatus: %s\n" % ("enabled" if loopin else "disaled")
+             + "Random/Shuffle: %s\n" % ("enabled" if shuffle else "disaled"))
 
     @explain_numargs(0, 1)
     @explain_argtype(0, is_track_num_or_star, optional=True)
     def trackinfo(self, track=None):
         if track == '*':
-            for i in range(self.tracklist_len):
-                meta = self.tracklist.GetMetadata(i)
+            for i in self.tracklist_list:
+                meta = self.tracklist.GetTracksMetadata(i)
                 if meta is not None:
-                    yield format_metadata(self.tracklist.GetMetadata(i))
+                    yield format_metadata(self.tracklist.GetTracksMetadata(i))
                     yield '\n'
         else:
             if track is not None:
-                meta = self.tracklist.GetMetadata(int(track))
+                meta = self.tracklist.GetTracksMetadata(int(track))
             else:
-                meta = self.player.GetMetadata()
+                meta = self.properties.Get(mpris[1], 'Metadata')
                 if meta is None:
                     raise NoTrackCurrentlySelected()
-            yield format_metadata(meta)
+                yield format_metadata(meta)
 
     # tracklist
 
@@ -412,35 +382,27 @@ class MPRISRemote(object):
     @explain_argtype(0, is_boolean, optional=True)
     def loop(self, on=None):
         if on == 'true':
-            self.tracklist.SetLoop(True)
+            self.properties.Set(mpris[1], 'Shuffle', True)
         elif on == 'false':
-            self.tracklist.SetLoop(False)
+            self.properties.Set(mpris[1], 'Shuffle', False)
         else:
-            try:
-                status = self.player.GetStatus()
-            except dbus.exceptions.DBusException:
-                print >>sys.stderr, "Player does not support checking loop status."
-            else:
-                yield ("true" if status[3] else "false") + '\n'
+            status = self.properties.Get(mpris[1], 'Shuffle')
+            yield ("true" if status else "false") + '\n'
 
     @explain_numargs(0, 1)
     @explain_argtype(0, is_boolean, optional=True)
-    def random(self, on=None):
+    def shuffle(self, on=None):
         if on == 'true':
-            self.tracklist.SetRandom(True)
+            self.properties.Set(mpris[1], 'Shuffle', True)
         elif on == 'false':
-            self.tracklist.SetRandom(False)
+            self.properties.Set(mpris[1], 'Shuffle', False)
         else:
-            try:
-                status = self.player.GetStatus()
-            except dbus.exceptions.DBusException:
-                print >>sys.stderr, "Player does not support checking random status."
-            else:
-                yield ("true" if status[1] else "false") + '\n'
+            status = self.properties.Get(mpris[1], 'PlaybackStatus')
+            yield ("true" if status else "false") + '\n'
 
     def verbose_status(self):
-        # to be compatible with a wide array of implementations (some very
-        # incorrect/incomplete), we have to do a LOT of extra work here.
+        """to be compatible with a wide array of implementations (some very
+        incorrect/incomplete), we have to do a LOT of extra work here."""
 
         output = ''
 
@@ -485,7 +447,7 @@ class MPRISRemote(object):
 
         have_status = (status is not None)
         have_curtrack = (curtrack is not None)
-        have_listlen = (self.tracklist_len >= 0)
+        have_listlen = (len(self.tracklist_list) > 0)
         have_player_info = (have_status or have_curtrack or have_listlen)
 
         have_pos = (pos is not None)
@@ -509,7 +471,7 @@ class MPRISRemote(object):
                 output += '/'
 
         if have_listlen:
-            output += str(self.tracklist_len)
+            output += str(len(self.tracklist_list))
 
         if have_player_info:
             output += ']'
@@ -556,47 +518,67 @@ class MPRISRemote(object):
 
         return output
 
-
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] in ('-h', '--help', '-?'):
-        print usage
-        raise SystemExit(0)
+    player_name = os.environ.get('MPRIS_PLAYER', '*')
 
-    player_name = os.environ.get('MPRIS_REMOTE_PLAYER', '*')
     remote = MPRISRemote()
+
+    from getopt import gnu_getopt
+    shortopt = '?hp:'
+    longopt  = ['help', 'player=']
+
+    try:
+        opts, args = gnu_getopt(sys.argv[1:], shortopt, longopt)
+    except GetoptError:
+        print >>sys.stderr, str(error)
+        print usage
+        SystemExit(4)
+
+    for arg, value in opts:
+        if arg in ('-h', '--help', '-?'):
+            print usage
+            raise SystemExit(0)
+        elif arg in ('-p', '--player'):
+            player_name = value
 
     try:
         remote.find_player(player_name)
-    except RequestedPlayerNotRunning, e:
-        print >>sys.stderr, 'Player "%s" is not running, but the following players were found:' % player_name
-        for n in remote.players_running:
-            print >>sys.stderr, "    %s" % n.replace("org.mpris.", "")
-        print >>sys.stderr, 'If you meant to use one of those players, ' \
-                            'set $MPRIS_REMOTE_PLAYER accordingly.'
+    except RequestedPlayerNotRunning as e:
+        print >>sys.stderr, 'Player %s is not running, ' \
+        'but the following players were found:' % player_name
+        for n in remote.players:
+            print >>sys.stderr, "    %s" % n.replace(mpris[0] + '.', "")
+        print >>sys.stderr, 'If you meant to use one of those players, ',
+        'set $MPRIS_PLAYER accordingly.'
         raise SystemExit(1)
     except NoPlayersRunning:
-        print >>sys.stderr, "No MPRIS-compliant players found running."
+        print >>sys.stderr, "No MPRIS-2 compliant players found running."
         raise SystemExit(1)
 
     import locale
-    encoding = sys.stdout.encoding or locale.getpreferredencoding() or 'ascii'
+    encoding = sys.stdout.encoding or locale.getpreferredencoding() or 'utf-8'
 
-    if len(sys.argv) == 1:
+    if len(args) == 0:
         method_name = 'verbose_status'
-        args = []
     else:
-        method_name = sys.argv[1]
-        args = sys.argv[2:]
+        method_name = args[0]
+        args=args[1:]
 
     try:
         output_generator = getattr(remote, method_name)(*args) or []
         for chunk in output_generator:
             sys.stdout.write(chunk.encode(encoding, 'replace'))
-    except BadUserInput, e:
+    except BadUserInput as e:
         print >>sys.stderr, e
         raise SystemExit(1)
     except NoTrackCurrentlySelected:
         print >>sys.stderr, "No track is currently selected."
     except KeyboardInterrupt:
         raise SystemExit(2)
+    else:
+        print >>sys.stderr, "Unexpected error:", sys.exc_info()[0]
+        raise SystemExit(3)
 
+#
+# vim:fenc=utf-8:ft=python:ci:pi:sts=4:sw=4:ts=4:
+#
